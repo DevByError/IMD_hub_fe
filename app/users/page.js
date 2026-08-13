@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useAuth } from '@/lib/AuthContext';
 import { apiFetch } from '@/lib/apiClient';
-import { alertError, toastSuccess } from '@/lib/alerts';
+import { alertError, confirmAction, toastSuccess } from '@/lib/alerts';
 import { staffStatusBadgeLabel } from '@/lib/roleUtils';
 import AppShell from '@/components/AppShell';
 import DataTable from '@/components/DataTable';
@@ -143,6 +143,36 @@ export default function UsersPage() {
       load();
     } catch (err) {
       alertError('Could not update team.', err.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // Quick toggle for the field that actually gates login (`status` — see
+  // auth.service.js, only 'active' is allowed to sign in), not `staffStatus`
+  // (the separate HR "currently employed" flag, which has no access
+  // effect). Anything other than 'active' — pending, inactive, suspended —
+  // reads as "not active" here and offers "Activate"; the full Edit form
+  // still has the 4-way dropdown for picking a specific one of those.
+  const handleToggleStatus = async () => {
+    const activating = selected.status !== 'active';
+    const confirmed = await confirmAction(
+      activating ? 'Activate this account?' : 'Deactivate this account?',
+      activating
+        ? `${selected.fullName} will be able to log in again.`
+        : `${selected.fullName} will no longer be able to log in.`,
+      { confirmButtonText: activating ? 'Activate' : 'Deactivate', danger: !activating }
+    );
+    if (!confirmed) return;
+
+    setSaving(true);
+    try {
+      await apiFetch(`/users/${selected.id}`, { method: 'PATCH', body: { status: activating ? 'active' : 'inactive' } });
+      toastSuccess(activating ? 'Account activated' : 'Account deactivated');
+      setSelected(null);
+      load();
+    } catch (err) {
+      alertError('Could not update status.', err.message);
     } finally {
       setSaving(false);
     }
@@ -339,7 +369,21 @@ export default function UsersPage() {
             </>
           )}
 
-          {canEdit && (
+          {canEdit && !selected.isManager && (
+            <div className="modal-footer" style={{ padding: '20px 0 0', border: 'none', display: 'flex', gap: 10 }}>
+              <button type="button" className="btn" onClick={openEdit}>Edit staff record</button>
+              <button
+                type="button"
+                className={selected.status === 'active' ? 'link-btn danger' : 'link-btn'}
+                onClick={handleToggleStatus}
+                disabled={saving}
+              >
+                {selected.status === 'active' ? 'Deactivate' : 'Activate'}
+              </button>
+            </div>
+          )}
+
+          {canEdit && selected.isManager && (
             <div className="modal-footer" style={{ padding: '20px 0 0', border: 'none' }}>
               <button type="button" className="btn" onClick={openEdit}>Edit staff record</button>
             </div>

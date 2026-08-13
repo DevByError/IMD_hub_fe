@@ -1,8 +1,8 @@
 'use client';
 
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useAuth } from '@/lib/AuthContext';
-import { apiFetch } from '@/lib/apiClient';
+import { apiFetch, apiFetchForm } from '@/lib/apiClient';
 import { alertError, toastSuccess } from '@/lib/alerts';
 import { primaryRoleName, isManagerRole, staffStatusBadgeLabel } from '@/lib/roleUtils';
 import AppShell from '@/components/AppShell';
@@ -14,11 +14,15 @@ import Modal from '@/components/Modal';
 import DateOfBirthPicker from '@/components/DateOfBirthPicker';
 import { NATIONALITIES } from '@/lib/nationalities';
 
-const SELF_FIELDS = ['phoneNumber', 'address', 'gender', 'nextOfKinName', 'nextOfKinContact'];
-const ADMIN_FIELDS = [
-  'fullName', 'idDocumentType', 'idDocumentNumber', 'dateOfBirth', 'position',
-  'employmentType', 'dateJoined', 'nationality', 'staffId', 'status', 'staffStatus', 'lastAppraisalDate',
+// Mirrors be/src/services/user.service.js's SELF_EDITABLE_FIELDS /
+// ADMIN_ONLY_FIELDS exactly — personal info (who you are) is self-editable,
+// employment record + account state (what your job/access is) stays
+// admin-only.
+const SELF_FIELDS = [
+  'phoneNumber', 'address', 'gender', 'nextOfKinName', 'nextOfKinContact',
+  'dateOfBirth', 'nationality', 'idDocumentType', 'idDocumentNumber', 'staffId',
 ];
+const ADMIN_FIELDS = ['fullName', 'position', 'employmentType', 'dateJoined', 'status', 'staffStatus', 'lastAppraisalDate'];
 
 const fmtDate = (d) => (d ? new Date(d).toLocaleDateString() : '—');
 const label = (v) => (v ? String(v).replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase()) : '—');
@@ -37,6 +41,8 @@ export default function ProfilePage() {
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [uploadingCv, setUploadingCv] = useState(false);
+  const cvInputRef = useRef(null);
 
   const canEditAdminFields = hasPermission('user.manage');
   const roleName = primaryRoleName(roles);
@@ -74,6 +80,31 @@ export default function ProfilePage() {
       alertError('Update failed', err.message);
     } finally {
       setSaving(false);
+    }
+  };
+
+  // Self-service, upload-on-select — same UX as AvatarUpload, just a
+  // different endpoint (POST /files/cv, multipart, not the base64 photo
+  // route). The backend already treats this as "self-owned unless
+  // otherwise stated" (see upload.controller.js's makeUploadHandler), so no
+  // permission check is needed here: any staff member can upload or
+  // replace their own CV. Uploading again simply points cvUrl at the new
+  // file (see upload.service.js's saveUpload) — that's the "replace".
+  const handleCvChange = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploadingCv(true);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      await apiFetchForm('/files/cv', formData);
+      await refresh();
+      toastSuccess(user.cvUrl ? 'CV replaced' : 'CV uploaded');
+    } catch (err) {
+      alertError('Could not upload CV.', err.message);
+    } finally {
+      setUploadingCv(false);
+      if (cvInputRef.current) cvInputRef.current.value = '';
     }
   };
 
@@ -160,7 +191,25 @@ export default function ProfilePage() {
             <div className="detail-grid">
               <div className="detail-item">
                 <div className="label">CV</div>
-                <FileLink src={user.cvUrl}>View CV</FileLink>
+                <div className="value" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <FileLink src={user.cvUrl}>View CV</FileLink>
+                  <button
+                    type="button"
+                    className="link-btn"
+                    style={{ width: 'auto' }}
+                    onClick={() => cvInputRef.current?.click()}
+                    disabled={uploadingCv}
+                  >
+                    {uploadingCv ? 'Uploading...' : user.cvUrl ? 'Replace CV' : 'Upload CV'}
+                  </button>
+                  <input
+                    ref={cvInputRef}
+                    type="file"
+                    accept=".pdf,.doc,.docx"
+                    style={{ display: 'none' }}
+                    onChange={handleCvChange}
+                  />
+                </div>
               </div>
             </div>
           </>
@@ -203,6 +252,49 @@ export default function ProfilePage() {
               </div>
             </div>
 
+            {/* Personal info: self-editable by anyone, same as Contact
+                above — matches be/src/services/user.service.js's
+                SELF_EDITABLE_FIELDS. Position, employment type, dates, and
+                account/staff status below still need an admin. */}
+            <div className="permission-category-label">Personal Info</div>
+            <div className="form-grid">
+              <div className="field">
+                <label>Nationality</label>
+                <select name="nationality" value={form.nationality} onChange={handleChange}>
+                  <option value="">Select...</option>
+                  {NATIONALITIES.map((n) => <option key={n} value={n}>{n}</option>)}
+                </select>
+              </div>
+              <div className="field">
+                <label>ID document type</label>
+                <select name="idDocumentType" value={form.idDocumentType} onChange={handleChange}>
+                  <option value="">Select...</option>
+                  <option value="ic">IC (local)</option>
+                  <option value="passport">Passport (foreign)</option>
+                </select>
+              </div>
+              <div className="field">
+                <label>ID document number</label>
+                <input name="idDocumentNumber" value={form.idDocumentNumber} onChange={handleChange} />
+              </div>
+              <div className="field full">
+                <label>Date of birth</label>
+                <DateOfBirthPicker value={form.dateOfBirth} onChange={(v) => setForm((p) => ({ ...p, dateOfBirth: v }))} idPrefix="dob-edit" />
+              </div>
+            </div>
+
+            {!isManager && (
+              <>
+                <div className="permission-category-label">Employment</div>
+                <div className="form-grid">
+                  <div className="field">
+                    <label>Staff ID</label>
+                    <input name="staffId" value={form.staffId} onChange={handleChange} />
+                  </div>
+                </div>
+              </>
+            )}
+
             {!isManager && (
               <>
                 <div className="permission-category-label">Next of Kin</div>
@@ -227,39 +319,12 @@ export default function ProfilePage() {
                     <label>Full name</label>
                     <input name="fullName" value={form.fullName} onChange={handleChange} />
                   </div>
-                  <div className="field">
-                    <label>Nationality</label>
-                    <select name="nationality" value={form.nationality} onChange={handleChange}>
-                      <option value="">Select...</option>
-                      {NATIONALITIES.map((n) => <option key={n} value={n}>{n}</option>)}
-                    </select>
-                  </div>
-                  <div className="field">
-                    <label>ID document type</label>
-                    <select name="idDocumentType" value={form.idDocumentType} onChange={handleChange}>
-                      <option value="">Select...</option>
-                      <option value="ic">IC (local)</option>
-                      <option value="passport">Passport (foreign)</option>
-                    </select>
-                  </div>
-                  <div className="field">
-                    <label>ID document number</label>
-                    <input name="idDocumentNumber" value={form.idDocumentNumber} onChange={handleChange} />
-                  </div>
-                  <div className="field full">
-                    <label>Date of birth</label>
-                    <DateOfBirthPicker value={form.dateOfBirth} onChange={(v) => setForm((p) => ({ ...p, dateOfBirth: v }))} idPrefix="dob-edit" />
-                  </div>
                 </div>
 
                 {!isManager && (
                   <>
                     <div className="permission-category-label">Employment (Admin)</div>
                     <div className="form-grid">
-                      <div className="field">
-                        <label>Staff ID</label>
-                        <input name="staffId" value={form.staffId} onChange={handleChange} />
-                      </div>
                       <div className="field">
                         <label>Position</label>
                         <input name="position" value={form.position} onChange={handleChange} />
